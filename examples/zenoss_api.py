@@ -1,19 +1,20 @@
-# Zenoss-3.0.x JSON API Example (python)
+# Zenoss-5.0.x JSON API Example (python)
 #
 # To quickly explore, execute 'python -i api_example.py'
 #
-# >>> z = ZenossAPIExample()
+# >>> z = ZenossAPI()
 # >>> events = z.get_events()
 # etc.
 
 import json
-import urllib
-import urllib2
+import pycurl
+from StringIO import StringIO
 
-ZENOSS_INSTANCE = 'https://10.11.1.44'
+# must have just the hostname and not the vhost
+ZENOSS_INSTANCE = 'https://jhanson-desktop'
 ZENOSS_USERNAME = 'admin'
-ZENOSS_PASSWORD = 'Admin2010'
-
+ZENOSS_PASSWORD = 'zenoss'
+ZENOSS_VHOST = "zenoss5"
 ROUTERS = { 'MessagingRouter': 'messaging',
             'EventsRouter': 'evconsole',
             'ProcessRouter': 'process',
@@ -31,31 +32,14 @@ class ZenossAPI():
         """
         Initialize the API connection, log in, and store authentication cookie
         """
-        # Use the HTTPCookieProcessor as urllib2 does not save cookies by default
-        self.urlOpener = urllib2.build_opener(urllib2.HTTPCookieProcessor())
-        if debug: self.urlOpener.add_handler(urllib2.HTTPHandler(debuglevel=1))
-        self.reqCount = 1
-
-        # Contruct POST params and submit login.
-        loginParams = urllib.urlencode(dict(
-                        __ac_name = ZENOSS_USERNAME,
-                        __ac_password = ZENOSS_PASSWORD,
-                        submitted = 'true',
-                        came_from = ZENOSS_INSTANCE + '/zport/dmd'))
-        self.urlOpener.open(ZENOSS_INSTANCE + '/zport/acl_users/cookieAuthHelper/login',
-                            loginParams)
+        self.reqCount = 0
+        pass
 
     def _router_request(self, router, method, data=[]):
         if router not in ROUTERS:
             raise Exception('Router "' + router + '" not available.')
-
-        # Contruct a standard URL request for API calls
-        req = urllib2.Request(ZENOSS_INSTANCE + '/zport/dmd/' +
-                              ROUTERS[router] + '_router')
-
-        # NOTE: Content-type MUST be set to 'application/json' for these requests
-        req.add_header('Content-type', 'application/json; charset=utf-8')
-
+        url = ZENOSS_INSTANCE + '/zport/dmd/' + ROUTERS[router] + '_router'
+        creds = "%s:%s" %( ZENOSS_USERNAME, ZENOSS_PASSWORD)
         # Convert the request parameters into JSON
         reqData = json.dumps([dict(
                     action=router,
@@ -64,12 +48,25 @@ class ZenossAPI():
                     type='rpc',
                     tid=self.reqCount)])
 
+        # Contruct a standard URL request for API calls
+        buffer = StringIO()
+        c = pycurl.Curl()
+        c.setopt(pycurl.URL, url)
+        c.setopt(pycurl.USERPWD, creds)
+        # zenoss uses self signed certs so we can not verify them
+        c.setopt(pycurl.SSL_VERIFYHOST, 0)
+        c.setopt(pycurl.SSL_VERIFYPEER, 0)
+        c.setopt(pycurl.POST, 1)
+        c.setopt(pycurl.HTTPHEADER, ['Content-type: application/json', 'Host: %s' % ZENOSS_VHOST])
+        c.setopt(pycurl.POSTFIELDS, reqData)
+        c.setopt(c.WRITEDATA, buffer)
+        c.perform()
+        c.close()
+        body = buffer.getvalue()
         # Increment the request count ('tid'). More important if sending multiple
         # calls in a single request
         self.reqCount += 1
-
-        # Submit the request and convert the returned JSON to objects
-        return json.loads(self.urlOpener.open(req, reqData).read())
+        return json.loads(body)
 
     def get_devices(self, deviceClass='/zport/dmd/Devices'):
         return self._router_request('DeviceRouter', 'getDevices',
@@ -96,3 +93,8 @@ class ZenossAPI():
         data = dict(device=device, summary=summary, severity=severity,
                     component='', evclasskey='', evclass='')
         return self._router_request('EventsRouter', 'add_event', [data])
+
+if __name__ == '__main__':
+    z = ZenossAPI()
+    from pprint import pprint
+    pprint(z.get_devices())
